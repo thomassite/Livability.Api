@@ -1,0 +1,23 @@
+# ========== Build stage ==========
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+WORKDIR /src
+
+# 先複製 csproj 並還原（快取）
+COPY Livability.Api/*.csproj ./Livability.Api/
+RUN dotnet restore ./Livability.Api/Livability.Api.csproj
+
+# 複製其餘原始碼並發佈
+COPY . .
+RUN dotnet publish ./Livability.Api/Livability.Api.csproj -c Release -o /app /p:UseAppHost=false
+
+# ========== Runtime stage ==========
+FROM mcr.microsoft.com/dotnet/aspnet:8.0
+WORKDIR /app
+
+# 讓 Kestrel 綁 0.0.0.0:5000（容器外才連得到）
+ENV ASPNETCORE_URLS=http://0.0.0.0:5000
+EXPOSE 5000
+
+COPY --from=build /app .
+# 如果你的專案名稱不同，改成輸出的 dll 名
+ENTRYPOINT ["dotnet", "Livability.Api.dll"]
