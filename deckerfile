@@ -1,36 +1,16 @@
-# ===== build stage =====
+# ===== build =====
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
-
-# 先只複製 sln/csproj 以利用快取
 COPY *.sln ./
-COPY Livability.Api/Livability.Api.csproj Livability.Api/
-RUN dotnet restore Livability.Api/Livability.Api.csproj
-
-# 再複製其餘原始碼並發佈
+COPY *.csproj ./
+RUN dotnet restore
 COPY . .
-RUN dotnet publish Livability.Api/Livability.Api.csproj -c Release -o /app /p:UseAppHost=false
+RUN dotnet publish -c Release -o /app /p:UseAppHost=false
 
-# ===== runtime stage =====
+# ===== runtime =====
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app
-
-# ✅ 對外綁定與埠（與 docker run 對齊）
 ENV ASPNETCORE_URLS=http://0.0.0.0:5000
 EXPOSE 5000
-
-# ✅（可選）時區
-ENV TZ=Asia/Taipei
-
-# ✅ 非 root 使用者（安全）
-RUN adduser --disabled-password --gecos "" app && chown -R app:app /app
-USER app
-
-# 複製發佈成果
 COPY --from=build /app .
-
-# ✅ 健康檢查（如果你有 /health endpoint；沒有就先註解）
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:5000/health || exit 1
-
 ENTRYPOINT ["dotnet","Livability.Api.dll"]
