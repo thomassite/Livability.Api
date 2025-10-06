@@ -9,7 +9,7 @@ pipeline {
     PORT_APP    = '5000'
 
     // 用 host.docker.internal 連原生 MySQL
-    DB_CONN     = 'Server=host.docker.internal;Port=3306;Database=appdb;User=appuser;Password=${DB_PASS};SslMode=None;'
+    DB_CONN     = 'Server=host.docker.internal;Port=3306;Database=appdb;User=root;Password=${DB_PASS};SslMode=None;'
   }
 
   options { timestamps() }
