@@ -1,0 +1,12 @@
+MySqlConnector.MySqlException (0x80004005): 23255 rows were copied to npa_tmaTempbfd478e7 but only 23222 were inserted.
+   at MySqlConnector.MySqlBulkCopy.WriteToServerAsync(IOBehavior ioBehavior, CancellationToken cancellationToken) in /_/src/MySqlConnector/MySqlBulkCopy.cs:line 347
+   at MySqlConnector.MySqlBulkCopy.WriteToServerAsync(DataTable dataTable, CancellationToken cancellationToken) in /_/src/MySqlConnector/MySqlBulkCopy.cs:line 148
+   at EFCore.BulkExtensions.SqlAdapters.MySql.MySqlAdapter.InsertAsync[T](DbContext context, Type type, IEnumerable`1 entities, TableInfo tableInfo, Action`1 progress, Boolean isAsync, CancellationToken cancellationToken)
+   at EFCore.BulkExtensions.SqlAdapters.MySql.MySqlAdapter.InsertAsync[T](DbContext context, Type type, IEnumerable`1 entities, TableInfo tableInfo, Action`1 progress, Boolean isAsync, CancellationToken cancellationToken)
+   at EFCore.BulkExtensions.SqlAdapters.MySql.MySqlAdapter.InsertAsync[T](DbContext context, Type type, IEnumerable`1 entities, TableInfo tableInfo, Action`1 progress, CancellationToken cancellationToken)
+   at EFCore.BulkExtensions.SqlAdapters.MySql.MySqlAdapter.MergeAsync[T](DbContext context, Type type, IEnumerable`1 entities, TableInfo tableInfo, OperationType operationType, Action`1 progress, Boolean isAsync, CancellationToken cancellationToken)
+   at EFCore.BulkExtensions.SqlAdapters.MySql.MySqlAdapter.MergeAsync[T](DbContext context, Type type, IEnumerable`1 entities, TableInfo tableInfo, OperationType operationType, Action`1 progress, Boolean isAsync, CancellationToken cancellationToken)
+   at EFCore.BulkExtensions.SqlAdapters.MySql.MySqlAdapter.MergeAsync[T](DbContext context, Type type, IEnumerable`1 entities, TableInfo tableInfo, OperationType operationType, Action`1 progress, CancellationToken cancellationToken)
+   at EFCore.BulkExtensions.SqlBulkOperation.MergeAsync[T](DbContext context, Type type, IEnumerable`1 entities, TableInfo tableInfo, OperationType operationType, Action`1 progress, CancellationToken cancellationToken)
+   at EFCore.BulkExtensions.DbContextBulkTransaction.ExecuteAsync[T](DbContext context, Type type, IEnumerable`1 entities, OperationType operationType, BulkConfig bulkConfig, Action`1 progress, CancellationToken cancellationToken)
+   at Livability.Api.Services.NpaTmaImportService.ImportFromCsvAsync(Stream csvStream) in D:\github.com\thomassite\Livability.Api\Services\NpaTmaImportService.cs:line 80
