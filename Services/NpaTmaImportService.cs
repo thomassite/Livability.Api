@@ -1,5 +1,9 @@
-﻿using System.Collections.Generic;
+﻿using System.Collections;
+using System.Collections.Generic;
+using System.DirectoryServices.Protocols;
 using System.Globalization;
+using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using AutoMapper;
@@ -33,13 +37,16 @@ namespace Livability.Api.Services
             // 可先用 bounding box 加速
             var latDelta = radiusKm / 111.0;
             var lonDelta = radiusKm / (111.0 * Math.Cos(lat * Math.PI / 180));
-
+            var end = new DateTime(request.year, request.month, 1);
+            var start = end.AddMonths(-3);
+            var startKey = start.Year * 100 + start.Month;
+            var endKey = end.Year * 100 + end.Month;
             var candidates = await _db.NpaTmas
                 .Where(p =>
                     p.Latitude >= request.lat - (decimal)latDelta && p.Latitude <= request.lat + (decimal)latDelta &&
-                    p.Longitude >= request.lon - (decimal)lonDelta && p.Longitude <= request.lon + (decimal)lonDelta && 
-                    p.Month == request.month && 
-                    p.Year == request.year)
+                    p.Longitude >= request.lon - (decimal)lonDelta && p.Longitude <= request.lon + (decimal)lonDelta &&
+        ((p.Year ?? 0) * 100 + (p.Month ?? 0)) >= startKey &&   // ✅ 範圍下限
+        ((p.Year ?? 0) * 100 + (p.Month ?? 0)) <= endKey)
                 .ToListAsync();
 
             // 套 Haversine 計算距離
