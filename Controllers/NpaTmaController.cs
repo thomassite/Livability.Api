@@ -1,11 +1,7 @@
-﻿using CsvHelper;
-using Livability.Api.Context;
-using Livability.Api.Dto;
+﻿using Livability.Api.Models;
+using Livability.Api.Models.NpaTma;
 using Livability.Api.Services;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Logging;
-using System.Formats.Asn1;
-using System.Globalization;
 
 namespace Livability.Api.Controllers
 {
@@ -21,8 +17,29 @@ namespace Livability.Api.Controllers
             _importService = importService;
             _logger = logger;
         }
+        /// <summary>
+        /// 查詢指定座標周圍30公里內的事故資料
+        /// </summary>
+        [HttpGet("nearby")]
+        public async Task<RespModel<List<NpaTmaLocationViewModel>>> NpaTmaNearby([FromQuery] NpaTmaNearbyRequest request)
+        {
+            RespModel<List<NpaTmaLocationViewModel>> resp = new RespModel<List<NpaTmaLocationViewModel>>();
+            try
+            {
+                resp.Result = await _importService.NpaTmaNearby(request);
+                resp.Success = true;
+            }
+            catch(Exception ex)
+            {
+                resp.Success = false;
+                resp.Message = ex.Message;
+            }
 
+            return resp;
+        }
+        [RequestSizeLimit(200_000_000)] // 200 MB
         [HttpPost("import")]
+        [RequestFormLimits(MultipartBodyLengthLimit = 200_000_000)]
         public async Task<IActionResult> ImportCsv(IFormFile file)
         {
             if (file == null || file.Length == 0)
