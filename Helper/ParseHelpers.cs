@@ -246,4 +246,39 @@ public static class ParseHelpers
         input = input.Trim();
         return input.Length > maxLength ? input[..maxLength] : input;
     }
+    /// <summary>
+    /// 將民國格式日期（例如 0114-11-03 或 114-11-03）轉為西元 DateOnly
+    /// </summary>
+    public static DateOnly? ParseTaiwanDate(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+
+        text = text.Trim();
+
+        // 格式如：0114-11-03、114-11-03、114/11/03、114.11.03
+        var match = System.Text.RegularExpressions.Regex.Match(
+            text,
+            @"0?(?<y>\d{3,4})[-/.年](?<m>\d{1,2})[-/.月](?<d>\d{1,2})"
+        );
+
+        if (!match.Success)
+            return null;
+
+        if (!int.TryParse(match.Groups["y"].Value, out int rocYear))
+            return null;
+
+        int year = rocYear + 1911;
+        if (!int.TryParse(match.Groups["m"].Value, out int month)) return null;
+        if (!int.TryParse(match.Groups["d"].Value, out int day)) return null;
+
+        try
+        {
+            return new DateOnly(year, month, day);
+        }
+        catch
+        {
+            return null;
+        }
+    }
 }

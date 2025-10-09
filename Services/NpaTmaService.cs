@@ -1,8 +1,4 @@
-﻿using System.Collections.Generic;
-using System.Globalization;
-using System.Text;
-using System.Text.RegularExpressions;
-using AutoMapper;
+﻿using AutoMapper;
 using CsvHelper;
 using CsvHelper.Configuration;
 using EFCore.BulkExtensions;
@@ -10,16 +6,22 @@ using Livability.Api.Context;
 using Livability.Api.Dto;
 using Livability.Api.Models.NpaTma;
 using Microsoft.EntityFrameworkCore;
+using System.Globalization;
+using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Livability.Api.Services
 {
-    public class NpaTmaImportService : BaseService
+    public class NpaTmaService : BaseService
     {
-
-        public NpaTmaImportService(LivabilityContext db, IMapper mapper, ILogger<NpaTmaImportService> logger) : base(db, mapper, logger)
+        public NpaTmaService(LivabilityContext db, IMapper mapper, ILogger<NpaTmaService> logger) : base(db, mapper, logger)
         {
         }
-
+        /// <summary>
+        /// 附近事故
+        /// </summary>
+        /// <param name="request"></param>
+        /// <returns></returns>
         public async Task<List<NpaTmaLocationViewModel>> NpaTmaNearby(NpaTmaNearbyRequest request)
         {
             List<NpaTmaLocationViewModel> result = new();
@@ -64,7 +66,11 @@ namespace Livability.Api.Services
             _mapper.Map(nearby.Select(x => x.p), result);
             return result;
         }
-
+        /// <summary>
+        /// A1 & A2 交通事故 CSV 匯入
+        /// </summary>
+        /// <param name="csvStream"></param>
+        /// <returns></returns>
         public async Task<int> ImportFromCsvAsync(Stream csvStream)
         {
             _db.ChangeTracker.AutoDetectChangesEnabled = false;
@@ -74,7 +80,6 @@ namespace Livability.Api.Services
             {
                 BadDataFound = args =>
                 {
-                    // 不要在此處使用 csv.GetField、csv.Context.Record 等 parser 狀態
                     _logger.LogWarning("Bad CSV raw row detected and skipped: {RawRecord}", args.RawRecord);
                 },
                 MissingFieldFound = null,
@@ -218,10 +223,5 @@ namespace Livability.Api.Services
                 throw;
             }
         }
-
-        #region 🔧 Helper (保留你原本的簡潔方法，並加入 Robust wrapper)
-        // 你原本的 TryParseDateFlexible 與 TryParseTimeFlexible 保留不變
-
-        #endregion
     }
 }

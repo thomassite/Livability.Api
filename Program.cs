@@ -8,7 +8,8 @@ builder.Services.AddAutoMapper(typeof(Program));
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-builder.Services.AddScoped<NpaTmaImportService>();
+builder.Services.AddScoped<NpaTmaService>();
+builder.Services.AddScoped<PccTenderService>();
 
 builder.Services.AddDbContext<LivabilityContext>();
 

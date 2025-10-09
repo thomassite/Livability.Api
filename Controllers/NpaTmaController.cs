@@ -5,16 +5,20 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace Livability.Api.Controllers
 {
+    /// <summary>
+    /// https://www.npa.gov.tw/ch/app/data/list?module=wg051&id=2177 警政署公開資料
+    /// </summary>
+    /// <remarks> A1 & A2 即時交通事故</remarks>
     [ApiController]
     [Route("api/[controller]")]
     public class NpaTmaController : ControllerBase
     {
-        private readonly NpaTmaImportService _importService;
+        private readonly NpaTmaService _service;
         private readonly ILogger<NpaTmaController> _logger;
 
-        public NpaTmaController(NpaTmaImportService importService, ILogger<NpaTmaController> logger)
+        public NpaTmaController(NpaTmaService service, ILogger<NpaTmaController> logger)
         {
-            _importService = importService;
+            _service = service;
             _logger = logger;
         }
         /// <summary>
@@ -26,17 +30,24 @@ namespace Livability.Api.Controllers
             RespModel<List<NpaTmaLocationViewModel>> resp = new RespModel<List<NpaTmaLocationViewModel>>();
             try
             {
-                resp.Result = await _importService.NpaTmaNearby(request);
+                resp.Result = await _service.NpaTmaNearby(request);
                 resp.Success = true;
             }
             catch(Exception ex)
             {
+                _logger.LogError(ex, "❌ 查詢失敗: {Error}", ex.Message);
                 resp.Success = false;
                 resp.Message = ex.Message;
             }
 
             return resp;
         }
+
+        /// <summary>
+        /// A1 & A2 交通事故資料匯入
+        /// </summary>
+        /// <param name="file"></param>
+        /// <returns></returns>
         [RequestSizeLimit(200_000_000)] // 200 MB
         [HttpPost("import")]
         [RequestFormLimits(MultipartBodyLengthLimit = 200_000_000)]
@@ -47,7 +58,7 @@ namespace Livability.Api.Controllers
 
             try
             {
-                var count = await _importService.ImportFromCsvAsync(file.OpenReadStream());
+                var count = await _service.ImportFromCsvAsync(file.OpenReadStream());
                 return Ok(new { message = $"成功匯入 {count} 筆交通事故資料。" });
             }
             catch (Exception ex)
