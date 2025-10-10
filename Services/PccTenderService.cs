@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Playwright;
 using System.Net;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Livability.Api.Services
 {
@@ -24,19 +25,10 @@ namespace Livability.Api.Services
         {
             Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
-            _logger.LogInformation("🚀 開始爬取採購網資料（timeRange={timeRange}）", request.timeRange);
 
             try
             {
-                var htmlPages = await FetchPccHtmlPagesAsync(new DateTime(2025, 10, 9), new DateTime(2025,10,9));
-                int totalCount = 0;
-
-                foreach (var html in htmlPages)
-                {
-                    var count = await ParseAndSaveTenderHtml(html);
-                    totalCount += count;
-                    _logger.LogInformation("✅ 本頁新增 {Count} 筆，累計 {Total} 筆", count, totalCount);
-                }
+                int totalCount = await FetchPccHtmlPagesAsync(request.startDate, request.endDate);
 
                 _logger.LogInformation("🎯 全部頁面處理完成，共新增 {Count} 筆資料。", totalCount);
                 return totalCount;
@@ -56,17 +48,10 @@ namespace Livability.Api.Services
             var doc = new HtmlDocument();
             doc.LoadHtml(html);
 
-            var resultHeader = doc.DocumentNode.SelectSingleNode("//div[contains(@class, 'title_1s') and contains(., '查詢結果')]");
-            if (resultHeader == null)
-            {
-                _logger.LogWarning("⚠️ 找不到『查詢結果』區塊。頁面結構可能已變更。");
-                return 0;
-            }
-
-            var table = resultHeader.SelectSingleNode("following::table[1]");
+            var table = doc.DocumentNode.SelectSingleNode("//table[@id='tpam' and contains(@class, 'tb_01')]");
             if (table == null)
             {
-                _logger.LogWarning("⚠️ 找不到查詢結果下的表格。");
+                _logger.LogWarning("⚠️ 找不到查詢結果表格。");
                 return 0;
             }
 
@@ -77,98 +62,168 @@ namespace Livability.Api.Services
                 return 0;
             }
 
-            var agencies = await _db.PccAgencies.ToListAsync();
-            var tenders = await _db.PccTenderMains.ToListAsync();
+            // 📦 快取既有資料
+            var existingAgencies = await _db.PccAgencies.AsNoTracking().ToListAsync();
+            var existingPk = await _db.PccTenderMains.AsNoTracking().Select(t => t.TpamPk).ToListAsync();
 
+            var newAgencies = new List<PccAgency>();
+            var allAgencyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             int count = 0;
 
-            foreach (var row in rows.Skip(1)) // 跳過表頭
+            // 🌀 [第一階段] 掃一遍收集所有機關名稱
+            foreach (var row in rows.Skip(1))
             {
                 var cols = row.SelectNodes("td");
-                if (cols == null || cols.Count < 4)
+                if (cols == null || cols.Count < 9)
                     continue;
 
                 string SafeText(HtmlNode n) =>
                     WebUtility.HtmlDecode(n.InnerText.Trim().Replace("\n", "").Replace("\r", "").Replace("&nbsp;", ""));
-                //採購性質
-                var category = SafeText(cols[5]);
-                //機關名稱
+
                 var agencyName = SafeText(cols[1]);
-                // 標案案號與名稱
-                var linkNode = cols[3].SelectSingleNode(".//a");
-                var tenderCaseNo = "";
-                var tenderName = "";
-                var detailUrl = "";
-                var budgetAmount = SafeText(cols[8]);
-                var tpamPk = "";
-                if (linkNode != null)
-                {
-                    detailUrl = linkNode.GetAttributeValue("href", "").Trim();
-                    if (!string.IsNullOrEmpty(detailUrl) && !detailUrl.StartsWith("http"))
-                        detailUrl = $"https://web.pcc.gov.tw{detailUrl}";
-
-                    var caseText = linkNode.InnerText.Trim();
-                    var lines = caseText.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-                    if (lines.Length > 0)
-                        tenderCaseNo = lines[0];
-                    if (lines.Length > 1)
-                        tenderName = lines[1];
-                }
-                else
-                {
-                    _logger.LogError($"linkNode error {SafeText(cols[3])}");
+                if (string.IsNullOrWhiteSpace(agencyName))
                     continue;
-                }
 
-                // 日期欄位
-                DateOnly? noticeDate = ParseDate(cols, 6);
-                DateOnly? bidDeadline = ParseDate(cols, 7);
-
-                // 重複檢查
-                bool exists = tenders.Any(t =>
-                    t.Category == category &&
-                    t.TenderCaseNo == tenderCaseNo &&
-                    agencies.Any(a => a.Id == t.PpcAgencyId && a.AgencyName == agencyName)
-                );
-
-                if (exists)
+                if (!existingAgencies.Any(a => a.AgencyName == agencyName) &&
+                    !newAgencies.Any(a => a.AgencyName == agencyName) &&
+                    allAgencyNames.Add(agencyName))
                 {
-                    _logger.LogInformation("↩️ 已存在，略過：{0} | {1} | {2}", category, agencyName, tenderCaseNo);
-                    continue;
+                    newAgencies.Add(new PccAgency { AgencyName = agencyName });
                 }
-
-                // 機關
-                var agency = agencies.FirstOrDefault(a => a.AgencyName == agencyName);
-                if (agency == null)
-                {
-                    var newAgency = new PccAgency { AgencyName = agencyName };
-                    agency = (await _db.PccAgencies.AddAsync(newAgency)).Entity;
-                    await _db.SaveChangesAsync();
-                    agencies.Add(agency);
-                }
-
-                // 新增標案
-                var pccTenderMain = new PccTenderMain
-                {
-                    Category = category,
-                    PpcAgencyId = agency.Id,
-                    TenderCaseNo = tenderCaseNo,
-                    TenderName = tenderName,
-                    NoticeDate = noticeDate,
-                    BidDeadline = bidDeadline,
-                    DetailUrl = detailUrl
-                };
-
-                await _db.PccTenderMains.AddAsync(pccTenderMain);
-                tenders.Add(pccTenderMain);
-                count++;
-
-                _logger.LogInformation("[{0}] 新增標案：{1} | {2} | {3}", count, agencyName, tenderCaseNo, tenderName);
             }
 
-            await _db.SaveChangesAsync();
+            // 🏦 寫入所有新機關，並更新快取
+            if (newAgencies.Any())
+            {
+                await _db.PccAgencies.AddRangeAsync(newAgencies);
+                await _db.SaveChangesAsync();
+                existingAgencies.AddRange(newAgencies);
+                _logger.LogInformation("🏢 新增 {0} 個新機關。", newAgencies.Count);
+            }
+
+            var newTenders = new List<PccTenderMain>();
+
+            // 🌀 [第二階段] 掃描每筆標案
+            foreach (var row in rows.Skip(1))
+            {
+                try
+                {
+                    var cols = row.SelectNodes("td");
+                    if (cols == null || cols.Count < 9)
+                        continue;
+
+                    string SafeText(HtmlNode n) =>
+                        WebUtility.HtmlDecode(n.InnerText.Trim().Replace("\n", "").Replace("\r", "").Replace("&nbsp;", ""));
+
+                    var category = SafeText(cols[5]);
+                    var agencyName = SafeText(cols[1]);
+                    var budgetAmount = SafeText(cols[8]);
+                    var tpamPk = "";
+                    var tenderCaseNo = "";
+                    var tenderName = "";
+                    var detailUrl = "";
+
+                    // 抓案號 (br 前的文字)
+                    var tdRaw = cols[2].InnerHtml;
+                    var beforeBr = tdRaw.Split("<br", StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+                    if (!string.IsNullOrEmpty(beforeBr))
+                    {
+                        var textOnly = HtmlEntity.DeEntitize(Regex.Replace(beforeBr, "<.*?>", "")).Trim();
+                        if (!string.IsNullOrEmpty(textOnly))
+                            tenderCaseNo = textOnly;
+                    }
+
+                    // 名稱與連結
+                    var linkNode = cols[2].SelectSingleNode(".//a");
+                    if (linkNode != null)
+                    {
+                        detailUrl = linkNode.GetAttributeValue("href", "").Trim();
+                        if (!string.IsNullOrEmpty(detailUrl))
+                        {
+                            if (!detailUrl.StartsWith("http"))
+                                detailUrl = $"https://web.pcc.gov.tw{detailUrl}";
+
+                            var matchPk = Regex.Match(detailUrl, @"pk=([^&]+)");
+                            if (matchPk.Success)
+                                tpamPk = matchPk.Groups[1].Value;
+                        }
+
+                        // 嘗試從 script 抓標案名稱
+                        var scriptNode = linkNode.SelectSingleNode(".//script");
+                        if (scriptNode != null)
+                        {
+                            var match = Regex.Match(scriptNode.InnerText, @"pageCode2Img\(""(?<name>[^""]+)""\)");
+                            if (match.Success)
+                                tenderName = match.Groups["name"].Value.Trim();
+                        }
+
+                        if (string.IsNullOrWhiteSpace(tenderName))
+                            tenderName = WebUtility.HtmlDecode(linkNode.InnerText.Trim());
+                    }
+                    else
+                    {
+                        _logger.LogWarning("⚠️ 無法找到標案連結：{0}", SafeText(cols[2]));
+                        continue;
+                    }
+
+                    // 清理文字
+                    tenderCaseNo = tenderCaseNo.Trim();
+                    tenderName = tenderName.Trim();
+                    decimal.TryParse(budgetAmount.Replace(",", ""), out var parsedBudget);
+
+                    DateOnly? noticeDate = ParseDate(cols, 6);
+                    DateOnly? bidDeadline = ParseDate(cols, 7);
+
+                    if (string.IsNullOrWhiteSpace(tpamPk))
+                        continue;
+                    if (existingPk.Contains(tpamPk))
+                        continue;
+
+                    // 找出機關
+                    var agency = existingAgencies.FirstOrDefault(a => a.AgencyName == agencyName);
+                    if (agency == null)
+                    {
+                        _logger.LogWarning("⚠️ 無法對應機關：{0}", agencyName);
+                        continue;
+                    }
+
+                    newTenders.Add(new PccTenderMain
+                    {
+                        Category = category,
+                        TenderCaseNo = tenderCaseNo,
+                        TenderName = tenderName,
+                        NoticeDate = noticeDate,
+                        BidDeadline = bidDeadline,
+                        BudgetAmount = parsedBudget,
+                        DetailUrl = detailUrl,
+                        TpamPk = tpamPk,
+                        PpcAgencyId = agency.Id
+                    });
+
+                    existingPk.Add(tpamPk);
+                    count++;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "❌ 解析標案時發生錯誤。");
+                }
+            }
+
+            // 🚀 寫入標案
+            if (newTenders.Any())
+            {
+                await _db.PccTenderMains.AddRangeAsync(newTenders);
+                await _db.SaveChangesAsync();
+                _logger.LogInformation("✅ 成功新增 {0} 筆標案。", count);
+            }
+            else
+            {
+                _logger.LogInformation("⚙️ 沒有新增任何新標案。");
+            }
+
             return count;
         }
+
 
         /// <summary>
         /// HTML 日期字串 → DateOnly（自動判斷民國／西元）
@@ -213,12 +268,8 @@ namespace Livability.Api.Services
             return null;
         }
 
-        /// <summary>
-        /// 使用 Playwright 依序抓取所有分頁 HTML
-        /// </summary>
-        public async Task<List<string>> FetchPccHtmlPagesAsync(DateTime startDate, DateTime endDate)
+        public async Task<int> FetchPccHtmlPagesAsync(DateTime startDate, DateTime endDate)
         {
-            var htmlPages = new List<string>();
             var random = new Random();
 
             string[] userAgents =
@@ -230,128 +281,110 @@ namespace Livability.Api.Services
     };
             var userAgent = userAgents[random.Next(userAgents.Length)];
 
-            using var playwright = await Playwright.CreateAsync();
-            var browser = await playwright.Chromium.LaunchAsync(new()
+            using var handler = new HttpClientHandler
             {
-                Headless = true,
-                SlowMo = random.Next(30, 80),
-                Args = new[] { "--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-gpu" }
-            });
+                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+            };
+            using var client = new HttpClient(handler);
 
-            var context = await browser.NewContextAsync(new()
-            {
-                UserAgent = userAgent,
-                ViewportSize = new ViewportSize { Width = 1366, Height = 768 },
-                IgnoreHTTPSErrors = true
-            });
+            client.DefaultRequestHeaders.Add("User-Agent", userAgent);
+            client.DefaultRequestHeaders.Add("Accept-Language", "zh-TW,zh;q=0.9,en;q=0.8");
+            client.DefaultRequestHeaders.Add("Referer", "https://web.pcc.gov.tw/prkms/tender/common/proctrg/indexTenderProctrg");
+            client.DefaultRequestHeaders.Add("Connection", "keep-alive");
 
-            var page = await context.NewPageAsync();
-            _logger.LogInformation("🌐 開始建立 session...");
+            var rocStart = $"{startDate.Year}/{startDate.Month:D2}/{startDate.Day:D2}";
+            var rocEnd = $"{endDate.Year}/{endDate.Month:D2}/{endDate.Day:D2}";
 
-            // 進入查詢頁
-            await page.GotoAsync("https://web.pcc.gov.tw/prkms/tender/common/proctrg/readTenderProctrg",
-                new() { WaitUntil = WaitUntilState.NetworkIdle, Timeout = 60000 });
+            _logger.LogInformation("📅 查詢區間：{Start} - {End}", rocStart, rocEnd);
 
-            await Task.Delay(random.Next(1500, 3000));
-
-            // ======  標案種類：招標 ======
-            await page.CheckAsync("#level_6");
-            _logger.LogInformation("✅ 已選擇『招標』");
-
-            // ======  公告類型：各式招標公告 ======
-            await page.SelectOptionAsync("#declarationSelect", "TENDER_WAY_ALL_DECLARATION");
-
-            // ======  標的分類：不限 ======
-            await page.CheckAsync("#RadProctrgCate4");
-            _logger.LogInformation("✅ 已選擇『標的分類：不限』");
-
-            // ======  公告日期：日期區間 ======
-            await page.CheckAsync("#level_23");
-            _logger.LogInformation("✅ 已切換至『公告日期區間』模式");
-
-            // 轉換日期 → 民國年格式（例：114/10/09）
-            string ToROC(DateTime dt) => $"{dt.Year - 1911}/{dt.Month:D2}/{dt.Day:D2}";
-            var rocStart = ToROC(startDate);
-            var rocEnd = ToROC(endDate);
-
-            _logger.LogInformation("🗓️ 設定查詢日期區間：{Start} - {End}", rocStart, rocEnd);
-
-            // 勾選日期區間
-            await page.CheckAsync("#level_23");
-
-            // 🧩 用 JS 設定隱藏欄位值 + 觸發事件
-            await page.EvaluateAsync($@"
-    const s = document.querySelector('#tenderStartDate');
-    const e = document.querySelector('#tenderEndDate');
-    if (s) {{
-        s.value = '{rocStart}';
-        s.dispatchEvent(new Event('input', {{ bubbles: true }}));
-        s.dispatchEvent(new Event('change', {{ bubbles: true }}));
-    }}
-    if (e) {{
-        e.value = '{rocEnd}';
-        e.dispatchEvent(new Event('input', {{ bubbles: true }}));
-        e.dispatchEvent(new Event('change', {{ bubbles: true }}));
-    }}
-");
-            _logger.LogInformation("📅 已設定查詢日期區間 {Start} 至 {End}", rocStart, rocEnd);
-
-            await Task.Delay(random.Next(500, 1200));
-
-            // ======  送出查詢 ======
-            await page.WaitForFunctionAsync("typeof proctrgTenderSearch === 'function'");
-            await page.EvaluateAsync("proctrgTenderSearch()");
-            // 等主容器存在
-            await page.WaitForSelectorAsync("#printArea", new() { Timeout = 60000 });
-
-            // 再等表格或資料列出現（tpam 是主表格 ID）
-            await page.WaitForSelectorAsync("table#tpam tr", new() { Timeout = 60000 });
-
-            _logger.LogInformation("🚀 查詢執行中...");
+            // 🧠 URL 產生器
+            string BuildUrl(int page) =>
+                $"https://web.pcc.gov.tw/prkms/tender/common/proctrg/readTenderProctrg?" +
+                $"pageSize=100&firstSearch=false&searchType=tpam&isBinding=N&isLogIn=N" +
+                $"&level_1=on&tenderStatus=TENDER_STATUS_0&tenderWay=TENDER_WAY_ALL_DECLARATION" +
+                $"&proctrgCode1=&proctrgCode2=&proctrgCode3=&radProctrgCate=&dateType=isDate" +  // ✅ 改為 isDate
+                $"&tenderStartDate={WebUtility.UrlEncode(rocStart)}" +
+                $"&tenderEndDate={WebUtility.UrlEncode(rocEnd)}" +
+                $"&d-49738-p={page}";
 
             int pageIndex = 1;
+            int totalCount = 0;
             while (true)
             {
-                var html = await page.ContentAsync();
-                htmlPages.Add(html);
-                _logger.LogInformation("📄 已擷取第 {PageIndex} 頁", pageIndex);
+                var url = BuildUrl(pageIndex);
+                _logger.LogInformation("🌐 抓取第 {Page} 頁: {Url}", pageIndex, url);
 
-                await Task.Delay(random.Next(2000, 4000));
+                string html = string.Empty;
+                int retry = 0;
 
-                var nextButton = await page.QuerySelectorAsync("#pagelinks a:has-text('下一頁')");
-                if (nextButton == null)
+                // --- ✅ 加入重試機制 ---
+                while (retry < 3)
+                {
+                    try
+                    {
+                        html = await client.GetStringAsync(url);
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        retry++;
+                        _logger.LogWarning(ex, "⚠️ 第 {Page} 頁第 {Retry} 次重試中...", pageIndex, retry);
+                        await Task.Delay(random.Next(3000, 7000));
+                    }
+                }
+
+                if (string.IsNullOrEmpty(html))
+                {
+                    _logger.LogError("❌ 第 {Page} 頁多次重試失敗，中斷。", pageIndex);
+                    break;
+                }
+
+                // --- ✅ 確認有資料表才收錄 ---
+                var doc = new HtmlAgilityPack.HtmlDocument();
+                doc.LoadHtml(html);
+
+                var tableNode = doc.DocumentNode.SelectSingleNode("//table[@id='tpam' and contains(@class, 'tb_01')]");
+                if (tableNode == null)
+                {
+                    _logger.LogWarning("⚠️ 第 {Page} 頁未發現資料表 (table#tpam)，可能查無資料或被導回首頁。", pageIndex);
+                    break;
+                }
+
+                totalCount += await ParseAndSaveTenderHtml(html);
+
+                // --- ✅ 用 XPath 判斷是否有「下一頁」連結 ---
+                var nextNode = doc.DocumentNode.SelectSingleNode("//span[@id='pagelinks']//a[contains(text(), '下一頁')]");
+                if (nextNode == null)
                 {
                     _logger.LogInformation("🚫 沒有下一頁，結束。");
                     break;
                 }
 
-                var currentUrl = page.Url;
-                await nextButton.ClickAsync();
-
-                try
+                // --- ✅ 取得下一頁的 href ---
+                var href = nextNode.GetAttributeValue("href", null);
+                if (string.IsNullOrEmpty(href))
                 {
-                    await page.WaitForURLAsync(u => u != currentUrl, new() { Timeout = 8000 });
-                }
-                catch (TimeoutException)
-                {
-                    await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
+                    _logger.LogInformation("🚫 沒有下一頁的連結，結束。");
+                    break;
                 }
 
-                await page.WaitForSelectorAsync("div.title_1s", new() { Timeout = 60000 });
+                // ✅ 檢查 d-49738-p 頁碼是否仍在遞增（避免死循環）
+                if (href.Contains($"d-49738-p={pageIndex}"))
+                {
+                    _logger.LogWarning("⚠️ 下一頁頁碼未變動 ({Page})，可能遇到最後一頁。", pageIndex);
+                    break;
+                }
+
                 pageIndex++;
 
-                if (pageIndex % 5 == 0)
-                {
-                    int pause = random.Next(10000, 20000);
-                    _logger.LogInformation("⏸ 模擬使用者休息 {Pause} ms...", pause);
-                    await Task.Delay(pause);
-                }
+                // --- ⏳ 模擬人類行為 ---
+                int wait = random.Next(2000, 5000);
+                _logger.LogInformation("⏸ 等待 {Wait} 毫秒以模擬人類操作", wait);
+                await Task.Delay(wait);
             }
 
-            await browser.CloseAsync();
-            _logger.LogInformation("✅ 完成，共擷取 {Count} 頁。", htmlPages.Count);
-
-            return htmlPages;
+            return totalCount;
         }
+
     }
 }
