@@ -5,6 +5,7 @@ using EFCore.BulkExtensions;
 using Livability.Api.Context;
 using Livability.Api.Dto;
 using Livability.Api.Models.NpaTma;
+using Livability.Api.Services.Interface;
 using Microsoft.EntityFrameworkCore;
 using System.Globalization;
 using System.Text;
@@ -12,7 +13,7 @@ using System.Text.RegularExpressions;
 
 namespace Livability.Api.Services
 {
-    public class NpaTmaService : BaseService
+    public class NpaTmaService : BaseService, INpaTmaService
     {
         public NpaTmaService(LivabilityContext db, IMapper mapper, ILogger<NpaTmaService> logger) : base(db, mapper, logger)
         {

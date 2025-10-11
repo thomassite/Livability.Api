@@ -1,8 +1,7 @@
-﻿using Livability.Api.Models.NpaTma;
-using Livability.Api.Models;
-using Microsoft.AspNetCore.Mvc;
+﻿using Livability.Api.Models;
 using Livability.Api.Models.PccTender;
 using Livability.Api.Services;
+using Microsoft.AspNetCore.Mvc;
 
 namespace Livability.Api.Controllers
 {
@@ -21,25 +20,11 @@ namespace Livability.Api.Controllers
             _service = servivce;
             _logger = logger;
         }
-
-
         [HttpPost("crawler")]
         public async Task<RespModel<int>> Crawler([FromBody] CrawlerRequest request)
         {
-            RespModel<int> resp = new RespModel<int>();
-            try
-            {
-                resp.Result = await _service.Crawler(request);
-                resp.Success = true;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ 執行失敗: {Error}", ex.Message);
-                resp.Success = false;
-                resp.Message = ex.Message;
-            }
-
-            return resp;
+            var result = await _service.Crawler(request);
+            return Resp.Ok(result);
         }
     }
 }

@@ -1,6 +1,6 @@
 ﻿using Livability.Api.Models;
 using Livability.Api.Models.NpaTma;
-using Livability.Api.Services;
+using Livability.Api.Services.Interface;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Livability.Api.Controllers
@@ -13,10 +13,10 @@ namespace Livability.Api.Controllers
     [Route("api/[controller]")]
     public class NpaTmaController : ControllerBase
     {
-        private readonly NpaTmaService _service;
+        private readonly INpaTmaService _service;
         private readonly ILogger<NpaTmaController> _logger;
 
-        public NpaTmaController(NpaTmaService service, ILogger<NpaTmaController> logger)
+        public NpaTmaController(INpaTmaService service, ILogger<NpaTmaController> logger)
         {
             _service = service;
             _logger = logger;
@@ -27,20 +27,8 @@ namespace Livability.Api.Controllers
         [HttpGet("nearby")]
         public async Task<RespModel<List<NpaTmaLocationViewModel>>> NpaTmaNearby([FromQuery] NpaTmaNearbyRequest request)
         {
-            RespModel<List<NpaTmaLocationViewModel>> resp = new RespModel<List<NpaTmaLocationViewModel>>();
-            try
-            {
-                resp.Result = await _service.NpaTmaNearby(request);
-                resp.Success = true;
-            }
-            catch(Exception ex)
-            {
-                _logger.LogError(ex, "❌ 查詢失敗: {Error}", ex.Message);
-                resp.Success = false;
-                resp.Message = ex.Message;
-            }
-
-            return resp;
+            var result = await _service.NpaTmaNearby(request);
+            return Resp.Ok(result);
         }
 
         /// <summary>
@@ -51,26 +39,10 @@ namespace Livability.Api.Controllers
         [RequestSizeLimit(200_000_000)] // 200 MB
         [HttpPost("import")]
         [RequestFormLimits(MultipartBodyLengthLimit = 200_000_000)]
-        public async Task<IActionResult> ImportCsv(IFormFile file)
+        public async Task<RespModel<int>> ImportCsv(IFormFile file)
         {
-            if (file == null || file.Length == 0)
-                return BadRequest("請上傳 CSV 檔案。");
-
-            try
-            {
-                var count = await _service.ImportFromCsvAsync(file.OpenReadStream());
-                return Ok(new { message = $"成功匯入 {count} 筆交通事故資料。" });
-            }
-            catch (Exception ex)
-            {
-                var inner = ex.InnerException?.Message ?? ex.Message;
-                _logger.LogError(ex, "❌ 匯入失敗: {Error}", inner);
-                return StatusCode(500, new
-                {
-                    message = "匯入失敗",
-                    error = inner
-                });
-            }
+            var result = await _service.ImportFromCsvAsync(file.OpenReadStream());
+            return Resp.Ok(result);
         }
     }
 }

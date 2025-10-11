@@ -1,4 +1,5 @@
-﻿using System;
+﻿using HtmlAgilityPack;
+using System;
 using System.Globalization;
 using System.Linq;
 using System.Text;
@@ -280,5 +281,47 @@ public static class ParseHelpers
         {
             return null;
         }
+    }
+    /// <summary>
+    /// HTML 日期字串 → DateOnly（自動判斷民國／西元）
+    /// </summary>
+    public static DateOnly? ParseDate(HtmlNodeCollection cols, int index)
+    {
+        if (cols.Count <= index)
+            return null;
+
+        var text = cols[index].InnerText.Trim();
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+
+        var rocPattern = @"^0?\d{3}[-/.年]";
+        if (System.Text.RegularExpressions.Regex.IsMatch(text, rocPattern))
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(
+                text,
+                @"0?(?<y>\d{3,4})[-/.年](?<m>\d{1,2})[-/.月]?(?<d>\d{1,2})"
+            );
+
+            if (match.Success &&
+                int.TryParse(match.Groups["y"].Value, out int rocYear) &&
+                int.TryParse(match.Groups["m"].Value, out int month) &&
+                int.TryParse(match.Groups["d"].Value, out int day))
+            {
+                try
+                {
+                    int year = rocYear + 1911;
+                    return new DateOnly(year, month, day);
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+        }
+
+        if (DateTime.TryParse(text, out var dt))
+            return DateOnly.FromDateTime(dt);
+
+        return null;
     }
 }

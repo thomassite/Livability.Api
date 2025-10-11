@@ -3,6 +3,7 @@ using HtmlAgilityPack;
 using Livability.Api.Context;
 using Livability.Api.Dto;
 using Livability.Api.Models.PccTender;
+using Livability.Api.Services.Interface;
 using Microsoft.EntityFrameworkCore;
 using System.Net;
 using System.Text;
@@ -10,11 +11,13 @@ using System.Text.RegularExpressions;
 
 namespace Livability.Api.Services
 {
-    public class PccTenderService : BaseService
+    public class PccTenderService : BaseService, IPccTenderService
     {
+        private readonly IMapGeocodeService _geocodeService;
 
-        public PccTenderService(LivabilityContext db, IMapper mapper, ILogger<PccTenderService> logger) : base(db, mapper, logger)
+        public PccTenderService(LivabilityContext db, IMapper mapper, ILogger<PccTenderService> logger, IMapGeocodeService geocodeService) : base(db, mapper, logger)
         {
+            _geocodeService = geocodeService;
         }
 
         /// <summary>
@@ -38,7 +41,9 @@ namespace Livability.Api.Services
                 return 0;
             }
         }
-
+        /// <summary>
+        /// 解析 HTML 表格內容並寫入 DB
+        /// </summary>
         /// <summary>
         /// 解析 HTML 表格內容並寫入 DB
         /// </summary>
@@ -62,14 +67,14 @@ namespace Livability.Api.Services
             }
 
             // 📦 快取既有資料
-            var existingAgencies = await _db.PccAgencies.AsNoTracking().ToListAsync();
+            var existingAgencies = await _db.GeoLocations.AsNoTracking().ToListAsync();
             var existingPk = await _db.PccTenderMains.AsNoTracking().Select(t => t.TpamPk).ToListAsync();
 
-            var newAgencies = new List<PccAgency>();
+            var newAgencies = new List<GeoLocation>();
             var allAgencyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             int count = 0;
 
-            // 🌀 [第一階段] 掃一遍收集所有機關名稱
+            // 🌀 [第一階段] 收集所有機關名稱
             foreach (var row in rows.Skip(1))
             {
                 var cols = row.SelectNodes("td");
@@ -83,18 +88,18 @@ namespace Livability.Api.Services
                 if (string.IsNullOrWhiteSpace(agencyName))
                     continue;
 
-                if (!existingAgencies.Any(a => a.AgencyName == agencyName) &&
-                    !newAgencies.Any(a => a.AgencyName == agencyName) &&
+                if (!existingAgencies.Any(a => a.PlaceName == agencyName) &&
+                    !newAgencies.Any(a => a.PlaceName == agencyName) &&
                     allAgencyNames.Add(agencyName))
                 {
-                    newAgencies.Add(new PccAgency { AgencyName = agencyName });
+                    newAgencies.Add(new GeoLocation { PlaceName = agencyName });
                 }
             }
 
-            // 🏦 寫入所有新機關，並更新快取
+            // 🏦 寫入所有新機關
             if (newAgencies.Any())
             {
-                await _db.PccAgencies.AddRangeAsync(newAgencies);
+                await _db.GeoLocations.AddRangeAsync(newAgencies);
                 await _db.SaveChangesAsync();
                 existingAgencies.AddRange(newAgencies);
                 _logger.LogInformation("🏢 新增 {0} 個新機關。", newAgencies.Count);
@@ -102,7 +107,7 @@ namespace Livability.Api.Services
 
             var newTenders = new List<PccTenderMain>();
 
-            // 🌀 [第二階段] 掃描每筆標案
+            // 🌀 [第二階段] 掃描標案
             foreach (var row in rows.Skip(1))
             {
                 try
@@ -122,7 +127,7 @@ namespace Livability.Api.Services
                     var tenderName = "";
                     var detailUrl = "";
 
-                    // 抓案號 (br 前的文字)
+                    // 抓案號
                     var tdRaw = cols[2].InnerHtml;
                     var beforeBr = tdRaw.Split("<br", StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
                     if (!string.IsNullOrEmpty(beforeBr))
@@ -147,7 +152,6 @@ namespace Livability.Api.Services
                                 tpamPk = matchPk.Groups[1].Value;
                         }
 
-                        // 嘗試從 script 抓標案名稱
                         var scriptNode = linkNode.SelectSingleNode(".//script");
                         if (scriptNode != null)
                         {
@@ -165,38 +169,45 @@ namespace Livability.Api.Services
                         continue;
                     }
 
-                    // 清理文字
                     tenderCaseNo = tenderCaseNo.Trim();
                     tenderName = tenderName.Trim();
                     decimal.TryParse(budgetAmount.Replace(",", ""), out var parsedBudget);
 
-                    DateOnly? noticeDate = ParseDate(cols, 6);
-                    DateOnly? bidDeadline = ParseDate(cols, 7);
+                    DateOnly? noticeDate = ParseHelpers.ParseDate(cols, 6);
+                    DateOnly? bidDeadline = ParseHelpers.ParseDate(cols, 7);
 
-                    if (string.IsNullOrWhiteSpace(tpamPk))
-                        continue;
-                    if (existingPk.Contains(tpamPk))
+                    if (string.IsNullOrWhiteSpace(tpamPk) || existingPk.Contains(tpamPk))
                         continue;
 
-                    // 找出機關
-                    var agency = existingAgencies.FirstOrDefault(a => a.AgencyName == agencyName);
+                    // 🧭 找出機關
+                    var agency = existingAgencies.FirstOrDefault(a => a.PlaceName == agencyName);
                     if (agency == null)
                     {
                         _logger.LogWarning("⚠️ 無法對應機關：{0}", agencyName);
                         continue;
                     }
 
+                    // 🗺 若該機關沒有座標紀錄，自動補上
+                    var hasGeo = await _db.GeoLocations.AnyAsync(x => x.PlaceName == agency.PlaceName);
+                    if (!hasGeo)
+                    {
+                        _logger.LogInformation("🌍 正在查詢座標：{Agency}", agencyName);
+                        await _geocodeService.GetCoordinatesAsync(agencyName);
+                    }
+
+                    // ✅ 建立標案
                     newTenders.Add(new PccTenderMain
                     {
                         Category = category,
                         TenderCaseNo = tenderCaseNo,
+                        TenderCaseNoInit = tenderCaseNo.Replace("(更正公告)", ""),
                         TenderName = tenderName,
                         NoticeDate = noticeDate,
                         BidDeadline = bidDeadline,
                         BudgetAmount = parsedBudget,
                         DetailUrl = detailUrl,
                         TpamPk = tpamPk,
-                        PpcAgencyId = agency.Id
+                        GeoLocationId = agency.Id
                     });
 
                     existingPk.Add(tpamPk);
@@ -208,7 +219,6 @@ namespace Livability.Api.Services
                 }
             }
 
-            // 🚀 寫入標案
             if (newTenders.Any())
             {
                 await _db.PccTenderMains.AddRangeAsync(newTenders);
@@ -222,52 +232,14 @@ namespace Livability.Api.Services
 
             return count;
         }
-
-
         /// <summary>
-        /// HTML 日期字串 → DateOnly（自動判斷民國／西元）
+        /// https://web.pcc.gov.tw/prkms/tender/common/proctrg/readTenderProctrg
+        /// 標案相關 >標案查詢 >標的分類查詢
         /// </summary>
-        private static DateOnly? ParseDate(HtmlNodeCollection cols, int index)
-        {
-            if (cols.Count <= index)
-                return null;
-
-            var text = cols[index].InnerText.Trim();
-            if (string.IsNullOrWhiteSpace(text))
-                return null;
-
-            var rocPattern = @"^0?\d{3}[-/.年]";
-            if (System.Text.RegularExpressions.Regex.IsMatch(text, rocPattern))
-            {
-                var match = System.Text.RegularExpressions.Regex.Match(
-                    text,
-                    @"0?(?<y>\d{3,4})[-/.年](?<m>\d{1,2})[-/.月]?(?<d>\d{1,2})"
-                );
-
-                if (match.Success &&
-                    int.TryParse(match.Groups["y"].Value, out int rocYear) &&
-                    int.TryParse(match.Groups["m"].Value, out int month) &&
-                    int.TryParse(match.Groups["d"].Value, out int day))
-                {
-                    try
-                    {
-                        int year = rocYear + 1911;
-                        return new DateOnly(year, month, day);
-                    }
-                    catch
-                    {
-                        return null;
-                    }
-                }
-            }
-
-            if (DateTime.TryParse(text, out var dt))
-                return DateOnly.FromDateTime(dt);
-
-            return null;
-        }
-
-        public async Task<int> FetchPccHtmlPagesAsync(DateTime startDate, DateTime endDate)
+        /// <param name="startDate"></param>
+        /// <param name="endDate"></param>
+        /// <returns></returns>
+        private async Task<int> FetchPccHtmlPagesAsync(DateTime startDate, DateTime endDate)
         {
             var random = new Random();
 
